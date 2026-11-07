@@ -1,0 +1,71 @@
+[package]
+name = "hellogate"
+version = "0.1.0"
+edition = "2021"
+description = "HelloGate - non-intrusive Windows app locker with acrylic overlay"
+authors = ["HelloGate Contributors"]
+license = "MIT"
+
+[dependencies]
+# windows crate：微软官方的 Win32 / WinRT 绑定。
+# 我们只按需开启所需模块，减小编译时间与产物体积。
+windows = { version = "0.62", features = [
+    # ---- 核心基础 ----
+    "Win32_Foundation",              # HWND、BOOL、LRESULT 等基础类型
+    "Win32_System_LibraryLoader",    # GetModuleHandleW / GetProcAddress
+    "Win32_UI_WindowsAndMessaging",  # SetWinEventHook、窗口创建、消息循环、托盘
+    "Win32_UI_Accessibility",        # SetWinEventHook / UnhookWinEvent（事件钩子）
+    # ---- 进程识别 ----
+    "Win32_System_Threading",        # OpenProcess、QueryFullProcessImageNameW
+    # ---- 亚克力毛玻璃 ----
+    "Win32_Graphics_Gdi",            # GDI（绘制解锁卡片）
+    # ---- Windows Hello 认证（WinRT） ----
+    "Security_Credentials_UI",       # UserConsentVerifier（Windows Hello）
+    "Foundation_Collections",        # WinRT 集合（Hello API 的异步依赖）
+    # ---- Phase 4 新增 ----
+    "Win32_Security_Cryptography",   # DPAPI：CryptProtectData / CryptUnprotectData（配置加密）
+    "Win32_System_Registry",         # 注册表：开机自启（HKCU\...\Run）
+    "Win32_UI_Shell",                # Shell_NotifyIconW：系统托盘图标
+    "Win32_UI_Controls",             # ListView / ComboBox 等公共控件（主控台 UI）
+    "Win32_UI_Controls_Dialogs",     # GetOpenFileNameW：系统「打开文件」选择框（添加应用时浏览 exe）
+    "Win32_System_Com",              # COM 基础设施：IShellLink 解析桌面快捷方式（.lnk → 真实 exe）
+    "Win32_Storage_FileSystem",      # IShellLinkW::GetPath 的编译开关（WIN32_FIND_DATAW 定义在此）
+    "Win32_UI_Input_KeyboardAndMouse", # 输入事件（托盘菜单 / 快捷键）
+    "Win32_Graphics_Dwm",            # DwmExtendFrameIntoClientArea（窗口圆角/边框）
+    # ---- 关于作者面板：二维码图片 ----
+    # WIC（Windows Imaging Component）是系统自带的图片解码器，用于把内嵌的
+    # PNG 字节解成位图。它随 Windows 一起安装，不引入任何第三方库，也不增加
+    # 需要随 exe 分发的 DLL。
+    "Win32_Graphics_Imaging",
+    "Win32_System_RemoteDesktop",    # WTSRegisterSessionNotification（锁屏/会话事件）
+    "Win32_System_Console",          # SetStdHandle：把 stdout 重定向到日志文件（防止双击闪退）
+    "Win32_UI_HiDpi",                # DPI 感知：高分屏（125%/150%/200%）下界面不被拉伸变形
+    # ---- 管理员模式启动拦截（HKLM IFEO + 提权代启动）新增 ----
+    "Win32_System_DataExchange",     # COPYDATASTRUCT：WM_COPYDATA 跨进程传请求体
+    "Win32_System_Diagnostics_Debug", # ReadProcessMemory：读取守门进程真实命令行（代启动请求的身份绑定校验）
+] }
+
+# windows-future：提供 WinRT 异步操作（IAsyncOperation）的阻塞等待方法 `join()`。
+# 注意：在 windows 0.62 中，异步结果不再是 `.get()`，而是通过 `Async` trait 的 `join()` 获取。
+# 这个 crate 是 windows 的依赖，但要直接 use 它的 trait 就必须显式声明。
+windows-future = "0.3"
+
+# serde + serde_json：配置文件的结构化序列化（写入前再用 DPAPI 整体加密）。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# winres：把品牌图标（assets/hellogate.ico）和文件属性（产品名/描述/语言）
+# 编译成 Windows 资源并链接进 exe。
+# ★ 它是**仅构建期**依赖：只在 build.rs 里跑一次，产物 exe 运行时依然零第三方依赖。
+[build-dependencies]
+winres = "0.1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

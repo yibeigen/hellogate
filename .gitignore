@@ -1,0 +1,13 @@
+# Rust 编译产物
+/target
+
+# 临时调试文件（开发过程中产生的日志，不应入库）
+*.txt
+!Cargo.lock
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
