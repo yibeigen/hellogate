@@ -1,6 +1,6 @@
 [package]
 name = "hellogate"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "HelloGate - non-intrusive Windows app locker with acrylic overlay"
 authors = ["HelloGate Contributors"]
@@ -43,6 +43,10 @@ windows = { version = "0.62", features = [
     # ---- 管理员模式启动拦截（HKLM IFEO + 提权代启动）新增 ----
     "Win32_System_DataExchange",     # COPYDATASTRUCT：WM_COPYDATA 跨进程传请求体
     "Win32_System_Diagnostics_Debug", # ReadProcessMemory：读取守门进程真实命令行（代启动请求的身份绑定校验）
+    # ---- 检查更新（v1.0.0）新增 ----
+    # WinHTTP 是 Windows 自带的 HTTP 客户端（winhttp.dll），用它查 GitHub 的
+    # latest release，不引入 curl/reqwest 等第三方网络库，exe 依旧零运行依赖。
+    "Win32_Networking_WinHttp",
 ] }
 
 # windows-future：提供 WinRT 异步操作（IAsyncOperation）的阻塞等待方法 `join()`。

@@ -137,6 +137,16 @@ pub struct Config {
     /// 保留字段是为了让代码里的遮罩实现仍可被引用（高级用户可手动开启）。
     #[serde(default)]
     pub overlay_enabled: bool,
+    /// ★ 授权码是否已激活（一次性，激活后永久生效，不再询问）。
+    ///
+    /// 【为什么放配置里】配置整体走 DPAPI 加密落盘，绑定当前 Windows 账户，
+    /// 用户随手改文件改不掉；激活状态跟着配置走，重装软件后需要重新输入
+    /// 授权码（这是预期行为，授权码在公众号「艺杯羹」随时可领）。
+    ///
+    /// 【为什么默认 false】`#[serde(default)]` 让老配置文件（没有这个字段）
+    /// 加载后自动视为"未激活"，首次升级启动时会弹一次激活框。
+    #[serde(default)]
+    pub license_activated: bool,
 }
 
 fn default_auth_method() -> String {
@@ -220,6 +230,8 @@ impl Default for Config {
             guard_enabled: true,
             // 默认不做运行中遮罩：本产品只做启动前验证。
             overlay_enabled: false,
+            // 默认未激活：首次启动会弹授权码激活框（见 license.rs）。
+            license_activated: false,
         }
     }
 }

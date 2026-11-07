@@ -72,19 +72,29 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 // ----------------------------------------------------------------------------
 // 作者信息（改这里就能换人、换号、换链接）
 // ----------------------------------------------------------------------------
-/// 作者 GitHub 主页。
+/// HelloGate 的 GitHub **项目仓库**地址。
 ///
-/// 【说明】这是从作者个人网站（`E:\Tools\Web\个人网站\config.js`）里取到的真实地址。
-/// 如果以后想改成 HelloGate 项目主页，只改这一行——顶栏入口和这张卡片都读它。
-pub(crate) const GITHUB_URL: &str = "https://github.com/yibeigen";
+/// 【说明】顶栏 GitHub 入口、关于卡片、检查更新都读这里——
+/// 只写 GitHub 一个入口（用户要求），Gitee / GitCode 作为镜像
+/// 出现在「关于作者」卡片和「发现新版本」提示里。
+pub(crate) const GITHUB_URL: &str = "https://github.com/yibeigen/hellogate";
+/// Gitee 镜像仓库（国内网络下载更快）。
+pub(crate) const GITEE_URL: &str = "https://gitee.com/yibeigen/hellogate";
+/// GitCode 镜像仓库（国内网络下载更快）。
+pub(crate) const GITCODE_URL: &str = "https://gitcode.com/yibeigen/hellogate";
+/// GitHub Release 最新发布页（检查更新拿到新版本号后引导用户到这里下载）。
+pub(crate) const GITHUB_RELEASES_URL: &str = "https://github.com/yibeigen/hellogate/releases/latest";
 /// 微信号。
 const WECHAT_ID: &str = "peace-83";
 /// QQ 号。
 const QQ_ID: &str = "3057454077";
 
 /// 卡片尺寸（96 DPI 下的逻辑像素）。
+///
+/// 【v1.0.0 加高】联系方式从 3 行扩到 5 行（新增 Gitee / GitCode 两个镜像入口，
+/// 用户要求"作者介绍里可以把三个都写着"），下方二维码区与版本行整体下移 64px。
 const CARD_W: i32 = 600;
-const CARD_H: i32 = 462;
+const CARD_H: i32 = 526;
 
 /// 卡片外面的遮罩色 #E6EAF0。
 ///
@@ -96,12 +106,13 @@ const SCRIM: u32 = 0x00F0EAE6;
 thread_local! {
     /// 两张二维码解码后的位图（第一次绘制时才解码，之后一直复用）。
     static IMAGES: RefCell<Images> = const { RefCell::new(Images::new()) };
-    /// 鼠标悬停目标：0 = 无，1 = 关闭按钮，2 = GitHub 行。
+    /// 鼠标悬停目标：0 = 无，1 = 关闭按钮，2 = GitHub 行，3 = Gitee 行，4 = GitCode 行。
     static HOVER: Cell<u8> = const { Cell::new(0) };
 }
 
 /// 解码后的位图。`hbmp` 由 GDI 持有，进程结束时随进程释放。
-struct QrImage {
+/// pub(crate)：授权码激活窗口（license.rs）要复用同一张公众号二维码。
+pub(crate) struct QrImage {
     hbmp: HBITMAP,
     w: i32,
     h: i32,
@@ -236,10 +247,16 @@ extern "system" fn panel_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let mut client = RECT::default();
                 let _ = GetClientRect(hwnd, &mut client);
                 let card = card_rect(client);
+                // 三个仓库行（下标 2/3/4）逐个判定，编码成不同的悬停状态，
+                // 绘制时靠这个编号决定哪一行高亮（见 paint 第 6 节）。
                 let hover = if point_in(close_rect(card), x, y) {
                     1
-                } else if point_in(github_row(card), x, y) {
+                } else if point_in(repo_row(card, 2), x, y) {
                     2
+                } else if point_in(repo_row(card, 3), x, y) {
+                    3
+                } else if point_in(repo_row(card, 4), x, y) {
+                    4
                 } else {
                     0
                 };
@@ -295,8 +312,12 @@ extern "system" fn panel_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                 if point_in(close_rect(card), x, y) {
                     close(hwnd);
-                } else if point_in(github_row(card), x, y) {
+                } else if point_in(repo_row(card, 2), x, y) {
                     open_url(GITHUB_URL);
+                } else if point_in(repo_row(card, 3), x, y) {
+                    open_url(GITEE_URL);
+                } else if point_in(repo_row(card, 4), x, y) {
+                    open_url(GITCODE_URL);
                 } else if !point_in(card, x, y) {
                     // 点卡片外面的遮罩 = "点空白处关闭"，和绝大多数弹出层的习惯一致。
                     close(hwnd);
@@ -349,11 +370,12 @@ fn close_rect(card: RECT) -> RECT {
     }
 }
 
-/// 联系方式区里「GitHub」那一行的点击热区。
+/// 联系方式区里仓库链接行的点击热区。
 ///
-/// 行高 32、从卡片顶部 +140 开始，GitHub 是第 3 行（下标 2）。
-fn github_row(card: RECT) -> RECT {
-    let top = card.top + sc(140) + sc(32) * 2;
+/// 行高 32、从卡片顶部 +140 开始；`idx` = 行下标：
+/// 0=微信 1=QQ 2=GitHub 3=Gitee 4=GitCode（后三行可点，前两个只是文本）。
+fn repo_row(card: RECT, idx: i32) -> RECT {
+    let top = card.top + sc(140) + sc(32) * idx;
     RECT {
         left: card.left + sc(32),
         top,
@@ -441,57 +463,60 @@ unsafe fn paint(hwnd: HWND) {
     // ---- 5. 分隔线 ----
     fill_solid(hdc, at(card, 32, 124, CARD_W - 32, 125), Palette::BORDER_SOFT);
 
-    // ---- 6. 联系方式三行 ----
+    // ---- 6. 联系方式五行 ----
     //
-    // 【排版说明】标签固定在左边 60px 一列、值从 96px 开始，
-    // 三行的值和标签天然对齐成两条竖线，比每行各写各的宽度整齐得多。
+    // 【v1.0.0 扩行】原来只有 3 行（微信 / QQ / GitHub），现在把 Gitee、GitCode
+    // 两个镜像仓库也列进来（用户要求"作者介绍里可以把三个都写着"）。
+    // 【排版说明】标签固定在左边一列（x=32..92）、值从 x=96 开始，
+    // 每行行高 32px，与 repo_row() 的点击热区严格对齐，五行排成两条竖线。
     SelectObject(hdc, f_small.into());
     draw_text_left(hdc, "微信", at(card, 32, 143, 92, 166), Palette::TEXT_SUB);
     draw_text_left(hdc, "QQ", at(card, 32, 175, 92, 198), Palette::TEXT_SUB);
     draw_text_left(hdc, "GitHub", at(card, 32, 207, 92, 230), Palette::TEXT_SUB);
+    draw_text_left(hdc, "Gitee", at(card, 32, 239, 92, 262), Palette::TEXT_SUB);
+    draw_text_left(hdc, "GitCode", at(card, 32, 271, 92, 294), Palette::TEXT_SUB);
 
     SelectObject(hdc, f_value.into());
     draw_text_left(hdc, WECHAT_ID, at(card, 96, 140, 320, 166), Palette::TEXT);
     draw_text_left(hdc, QQ_ID, at(card, 96, 172, 320, 198), Palette::TEXT);
 
-    // GitHub 用品牌色 + 一条下划线，明确表达"这是链接、点了会跳转"。
-    let github_hot = HOVER.with(|h| h.get()) == 2;
-    let github_color = if github_hot {
-        Palette::BRAND_DARK
-    } else {
-        Palette::BRAND
-    };
-    draw_text_left(hdc, "github.com", at(card, 96, 204, 320, 230), github_color);
-    fill_solid(
-        hdc,
-        at(card, 96, 228, 96 + 92, 229),
-        if github_hot {
-            Palette::BRAND_DARK
-        } else {
-            Palette::BRAND
-        },
-    );
+    // 三个仓库链接统一画法：品牌色文字 + 下划线，明确表达"这是链接、点了会跳转"；
+    // 悬停时加深一档（BRAND_DARK），和顶栏入口的交互反馈保持一致。
+    // 元组 = (值文本, 下划线宽度, 对应的 HOVER 编码)；
+    // 下划线宽度按 15px 字宽估算（github.com 沿用原值 92，其余按字符数等比推算）。
+    let links: [(&str, i32, u8); 3] =
+        [("github.com", 92, 2), ("gitee.com", 83, 3), ("gitcode.com", 101, 4)];
+    for (i, (text, uw, code)) in links.iter().enumerate() {
+        // 行的顶边 = 204 + 32*i，和 repo_row(card, 2+i) 严格对应；
+        // 文本框高 26、下划线画在顶边 +24 处（1px 粗），与原 GitHub 行画法一致。
+        let value_top = 204 + 32 * i as i32;
+        let hot = HOVER.with(|h| h.get()) == *code;
+        let color = if hot { Palette::BRAND_DARK } else { Palette::BRAND };
+        draw_text_left(hdc, text, at(card, 96, value_top, 320, value_top + 26), color);
+        fill_solid(hdc, at(card, 96, value_top + 24, 96 + *uw, value_top + 25), color);
+    }
 
     // ---- 7. 第二块内容：两张二维码 ----
-    fill_solid(hdc, at(card, 32, 252, CARD_W - 32, 253), Palette::BORDER_SOFT);
+    // 【v1.0.0】联系方式从 3 行扩到 5 行后，本区整体下移 64px（新增 2 行 × 32px）。
+    fill_solid(hdc, at(card, 32, 316, CARD_W - 32, 317), Palette::BORDER_SOFT);
 
     SelectObject(hdc, f_small.into());
     draw_text_left(
         hdc,
         "公众号 · 微信搜一搜「艺杯羹」",
-        at(card, 32, 266, 292, 286),
+        at(card, 32, 330, 292, 350),
         Palette::TEXT_SUB,
     );
     draw_text_left(
         hdc,
         "赞赏码 · 请作者喝杯茶",
-        at(card, 308, 266, 568, 286),
+        at(card, 308, 330, 568, 350),
         Palette::TEXT_SUB,
     );
 
     // 两个"格子"里画图：等比缩放 + 居中，不拉伸变形。
-    let slot_official = at(card, 32, 286, 292, 436);
-    let slot_reward = at(card, 308, 286, 568, 436);
+    let slot_official = at(card, 32, 350, 292, 500);
+    let slot_reward = at(card, 308, 350, 568, 500);
     IMAGES.with(|cell| {
         let mut imgs = cell.borrow_mut();
         if !imgs.loaded {
@@ -511,12 +536,12 @@ unsafe fn paint(hwnd: HWND) {
 
     // ---- 7.5 版本号与构建时间（规格 E：关于页标注版本，便于用户反馈问题时报版本）----
     //
-    // 【y 坐标取值依据】卡片总高 CARD_H = 462，最后一行内容（两张二维码的
-    // 摆放格子）底边在 436（见上面 slot_official / slot_reward 的 at(..., 436)），
-    // 也就是说卡片底部还剩 462 − 436 = 26px 的空隙。这里取 440~458：
-    // 上边 440 = 二维码底边 436 再留 4px，避免小字贴图太近；
-    // 下边 458 = 卡片底边 462 再留 4px，保证整行文字都在卡片内不越界。
-    // 行高 458 − 440 = 18px，大于 13px 字高，配合 DT_VCENTER 文字在行内垂直居中。
+    // 【y 坐标取值依据】卡片总高 CARD_H = 526，最后一行内容（两张二维码的
+    // 摆放格子）底边在 500（见上面 slot_official / slot_reward 的 at(..., 500)），
+    // 也就是说卡片底部还剩 526 − 500 = 26px 的空隙。这里取 504~522：
+    // 上边 504 = 二维码底边 500 再留 4px，避免小字贴图太近；
+    // 下边 522 = 卡片底边 526 再留 4px，保证整行文字都在卡片内不越界。
+    // 行高 522 − 504 = 18px，大于 13px 字高，配合 DT_VCENTER 文字在行内垂直居中。
     // （左右沿用卡片 32px 内边距，水平居中由 draw_text_center 的 DT_CENTER 完成。）
     //
     // 【字体】复用第 2 步创建的 f_small（13px 常规字重）——这里显式再 Select 一次，
@@ -532,7 +557,7 @@ unsafe fn paint(hwnd: HWND) {
             env!("CARGO_PKG_VERSION"),
             crate::build_ts_text()
         ),
-        at(card, 32, 440, CARD_W - 32, 458),
+        at(card, 32, 504, CARD_W - 32, 522),
         Palette::TEXT_MUTED,
     );
 
@@ -568,7 +593,8 @@ unsafe fn make_font(height: i32, weight: i32) -> HFONT {
 }
 
 /// 把一张位图等比缩放、居中画进指定区域。
-unsafe fn draw_image(hdc: HDC, img: &QrImage, slot: RECT) {
+/// pub(crate)：授权码激活窗口（license.rs）复用同一套"等比缩放居中"画法。
+pub(crate) unsafe fn draw_image(hdc: HDC, img: &QrImage, slot: RECT) {
     let slot_w = (slot.right - slot.left).max(1);
     let slot_h = (slot.bottom - slot.top).max(1);
     // 取宽、高两个方向缩放比的**较小值**：保证图完整放得下，又不会变形。
@@ -608,6 +634,7 @@ unsafe fn draw_image(hdc: HDC, img: &QrImage, slot: RECT) {
 // ============================================================================
 
 /// 把编译进 exe 的 PNG 字节解码成一张 32 位位图。
+/// pub(crate)：授权码激活窗口（license.rs）要解码同一张公众号二维码。
 ///
 /// # 步骤
 /// 1. 把字节数组包成 COM 的 `IStream` —— WIC 只认流，不认"内存指针"；
@@ -618,7 +645,7 @@ unsafe fn draw_image(hdc: HDC, img: &QrImage, slot: RECT) {
 /// 5. 建一个自上而下的 DIB 区（`biHeight` 为负），把像素拷进去。
 ///
 /// 返回 `None` 表示系统不支持或图片损坏；调用方会安静地跳过图片。
-unsafe fn decode_png(bytes: &'static [u8]) -> Option<QrImage> {
+pub(crate) unsafe fn decode_png(bytes: &'static [u8]) -> Option<QrImage> {
     // 确保当前线程初始化过 COM。重复调用无害：
     // 已初始化时返回 S_FALSE 或 RPC_E_CHANGED_MODE，两种情况都说明"能用"。
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);

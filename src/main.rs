@@ -40,6 +40,8 @@ mod gallery;
 mod gater;
 mod hook;
 mod ifeo;
+// 授权码激活（v1.0.0）：首次启动弹激活框，输入公众号「艺杯羹」领取的授权码。
+mod license;
 mod overlay;
 mod password;
 mod process;
@@ -48,6 +50,8 @@ mod state;
 // 轻量 Toast 提示（UI 优化方案 A1）：无需决策的短反馈
 mod toast;
 mod tray;
+// 检查更新（v1.0.0）：WinHTTP 查 GitHub 最新 release + 「发现新版本」下载卡片。
+mod update;
 // 两个窗口（主控台 / 解锁弹窗）共用的一套配色与绘图基元。
 // 单独成模块是为了防止两边各写一份、慢慢长成两种样子（见 ui.rs 顶部说明）。
 mod ui;
@@ -310,7 +314,22 @@ fn main() {
     let first_run = !config::config_path().exists();
 
     // 3. 加载配置（DPAPI 解密；失败自动回退默认）
-    let cfg = config::load();
+    let mut cfg = config::load();
+
+    // ★ 授权码门（v1.0.0）：未激活时先弹激活框（模态、阻塞）。
+    //
+    // 【为什么放在这里】
+    // - 在 IFEO 登记同步之前：没激活就不该改动系统注册表；
+    // - 在主控台打开之前：激活是"用软件前的第一道门"，顺序符合直觉；
+    // - 提权/单实例之后：避免多个实例各弹一次激活框打架。
+    //
+    // 【取消激活 = 退出进程】用户点 ✕ / Esc 放弃输入授权码时，软件直接退出，
+    // 不做任何系统改动——这是"授权"语义的自然结果。
+    // （--gate 短命子进程在上面已经分派返回，不会走到这里，拦截不受激活影响。）
+    if !license::ensure_activated(&mut cfg) {
+        logln!("[main] 未激活，退出（不写注册表、不启动托盘）");
+        return;
+    }
     logln!("========================================================");
     logln!("  HelloGate —— 非侵入式 Windows 应用锁");
     logln!("========================================================");
@@ -627,13 +646,20 @@ unsafe extern "system" fn message_wnd_proc(
         let mouse_msg = (lparam.0 as u32) & 0xFFFF;
         const WM_RBUTTONUP: u32 = 0x0205;
         const WM_LBUTTONUP: u32 = 0x0202;
+        // WM_LBUTTONDBLCLK = 0x0203：用户双击托盘图标时 Windows 发来的消息。
+        const WM_LBUTTONDBLCLK: u32 = 0x0203;
         if mouse_msg == WM_RBUTTONUP {
             // 右键 → 弹菜单
             if let Some(cmd) = tray::show_menu(hwnd) {
                 handle_tray_command(hwnd, cmd);
             }
-        } else if mouse_msg == WM_LBUTTONUP {
-            // 左键 → 直接打开主控台
+        } else if mouse_msg == WM_LBUTTONUP || mouse_msg == WM_LBUTTONDBLCLK {
+            // 左键单击或双击 → 打开主控台。
+            // 【为什么双击也要处理】旧代码只处理了单击（WM_LBUTTONUP），而用户
+            // 双击托盘图标时 Windows 发的是 WM_LBUTTONDBLCLK、中间不会再补一条
+            // 单击消息，导致"双击托盘没反应、只有单击才开"（v1.0.0 用户实测反馈）。
+            // 两种都接上，无论用户习惯单击还是双击都能打开主控台。
+            // 重复触发由 open_console 的 CAS 旗标挡住，不会叠出两个窗口。
             handle_tray_command(hwnd, tray::CMD_OPEN_CONSOLE);
         }
         return LRESULT(0);

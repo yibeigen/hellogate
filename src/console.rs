@@ -94,7 +94,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HMENU, KillTimer, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
     SetForegroundWindow, SetTimer, SetWindowTextW, ShowWindow,
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    HTCAPTION, IDC_ARROW, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT,
+    HTCAPTION, IDC_ARROW, SW_MINIMIZE, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT,
     WM_CTLCOLORSTATIC, WM_DESTROY,
     // WM_KEYDOWN：识别 Ctrl+S 快捷键；WM_LBUTTONUP：顶栏入口"松开才触发"的后半段。
     WM_DRAWITEM, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCLBUTTONDOWN,
@@ -177,16 +177,16 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 /// 定时器 ID 只要求在"同一个窗口"内唯一，7 远离常用的小数值即可。
 const SAVE_TIMER_ID: usize = 7;
 
-/// 顶栏右侧两个入口的矩形（物理像素）。
+/// 顶栏右侧三个入口的矩形（物理像素）。
 ///
-/// 横向位置全部从**客户区右边界**往左推算，而不是写死 484 / 560：
-/// 这样即使以后把窗口改宽，两个入口也始终贴着右上角，不会漂到屏幕中间。
-/// 返回值：`[0]` = GitHub，`[1]` = 作者。
-fn header_link_rects(client_right: i32) -> [RECT; 2] {
-    // 作者入口：右边留 64px，给右上角 ✕ 的点击热区（右侧 52px）让位；
-    // 再留 12px 空隙，避免鼠标在两个入口之间移动时误触关闭。
+/// 横向位置全部从**客户区右边界**往左推算，而不是写死坐标：
+/// 这样即使以后把窗口改宽，入口也始终贴着右上角，不会漂到屏幕中间。
+/// 返回值：`[0]` = GitHub，`[1]` = 作者，`[2]` = 检查更新。
+fn header_link_rects(client_right: i32) -> [RECT; 3] {
+    // 最右边是三个窗口按钮（最小化/最大化/关闭，见 window_btn_rects），
+    // 共占 132px；入口区从按钮区左侧再让出 8px 空隙开始往左排。
     // 垂直方向：顶栏高 84，入口胶囊高 32 → 上下各留 (84-32)/2 = 26 居中。
-    let author_right = client_right - sc(64);
+    let author_right = client_right - sc(140);
     let author = RECT {
         left: author_right - sc(96),
         top: sc(26),
@@ -200,7 +200,123 @@ fn header_link_rects(client_right: i32) -> [RECT; 2] {
         right: author.left - sc(8),
         bottom: sc(58),
     };
-    [github, author]
+    // 检查更新入口：GitHub 再往左，宽 84（"检查更新"四个 14px 汉字 ≈ 56 + 左右内边距）。
+    let update = RECT {
+        left: github.left - sc(8) - sc(84),
+        top: sc(26),
+        right: github.left - sc(8),
+        bottom: sc(58),
+    };
+    [github, author, update]
+}
+
+/// 顶栏最右侧三个窗口按钮的矩形（物理像素）。
+///
+/// 【为什么自绘而不用系统标题栏】主控台是无边框 WS_POPUP 窗口（为了
+/// 圆角和自定义顶栏视觉），没有系统标题栏，最小化/最大化/关闭只能自己画。
+/// 每个按钮 44px 宽、整条顶栏高，和系统窗口的点击热区尺寸一致，好按。
+/// 返回值：`[0]` = 最小化，`[1]` = 最大化/还原，`[2]` = 关闭。
+fn window_btn_rects(client_right: i32) -> [RECT; 3] {
+    let close = RECT {
+        left: client_right - sc(44),
+        top: 0,
+        right: client_right,
+        bottom: sc(84),
+    };
+    let max = RECT {
+        left: client_right - sc(88),
+        top: 0,
+        right: client_right - sc(44),
+        bottom: sc(84),
+    };
+    let min = RECT {
+        left: client_right - sc(132),
+        top: 0,
+        right: client_right - sc(88),
+        bottom: sc(84),
+    };
+    [min, max, close]
+}
+
+/// ★ 是否处于"最大化"状态（v1.0.0）。
+///
+/// 【为什么是进程级原子量而不是 thread_local】sc() 是 pub(crate) 全局换算函数，
+/// about.rs / applist.rs 都在用它；缩放基准（SYSTEM_DPI）本身也是进程级静态量，
+/// 最大化标志和它必须同生命周期，否则"谁在最大化"会对不上。
+static MAXIMIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 最大化 / 还原切换（v1.0.0）。
+///
+/// # 实现思路：不重排版，只换"缩放基准"
+/// 界面按 760×820 逻辑像素设计，所有几何都经 sc() 换算成物理像素。
+/// sc() 读的是进程级 SYSTEM_DPI——所以"最大化"只需要：
+/// 1. 把 SYSTEM_DPI 临时抬到"工作区刚好装得下 760×820"的倍率；
+/// 2. 销毁全部子控件、按新 DPI 重建、窗口居中到工作区。
+/// 整套布局（卡片、列表、输入框）自动等比放大，**永远不会排坏**——
+/// 这比给每个控件写"拉伸规则"省几百行代码，视觉上也保持设计稿的比例关系。
+/// 还原 = 重新调用 detect_dpi() 把基准算回正常值，再走同一套重建流程。
+unsafe fn toggle_maximize(hwnd: HWND) {
+    // BOOL 在 windows crate 的 core 模块；TRUE 没导出，用 BOOL(1) 表示。
+    use windows::core::BOOL;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, SystemParametersInfoW, SPI_GETWORKAREA,
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+
+    // 1. 先采集界面当前状态：子控件马上要整体销毁重建，
+    //    不先收下来，用户刚勾选的应用、刚选的认证方式就丢了。
+    let cur = CONTROLS.with(|c| c.borrow().clone()).map(|h| collect_config(h));
+
+    // 2. 算目标缩放基准。
+    if !MAXIMIZED.load(Ordering::SeqCst) {
+        // 最大化：取"工作区能装下 760×820"的最大倍率（上限 3.0 倍，
+        // 防止 4K 大屏把字放到荒谬的大小）。
+        let mut work = RECT::default();
+        if SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut work as *mut _ as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_err()
+        {
+            return; // 拿不到工作区就放弃，不动现状
+        }
+        let avail_w = (work.right - work.left) as f32;
+        let avail_h = (work.bottom - work.top) as f32;
+        if avail_w <= 0.0 || avail_h <= 0.0 {
+            return;
+        }
+        let scale = (avail_w / 760.0).min(avail_h / 820.0).min(3.0);
+        SYSTEM_DPI.store(((scale * 96.0).round() as u32).max(96), Ordering::Relaxed);
+    } else {
+        // 还原：detect_dpi 会按系统 DPI + 工作区钳制重新算回"正常基准"。
+        detect_dpi();
+    }
+
+    // 3. 销毁全部子控件。
+    //    EnumChildWindows 逐个回调，回调里 DestroyWindow——
+    //    父窗口只负责画背景，子控件全部由 build_controls 重建。
+    unsafe extern "system" fn destroy_child(child: HWND, _lparam: LPARAM) -> BOOL {
+        let _ = DestroyWindow(child);
+        BOOL(1)
+    }
+    let _ = EnumChildWindows(
+        Some(hwnd),
+        Some(destroy_child),
+        LPARAM(0),
+    );
+
+    // 4. 新尺寸 + 居中（sc(760)/sc(820) 已经按新基准放大）。
+    center_window(hwnd, sc(760), sc(820));
+
+    // 5. 按采集到的状态重建控件，整窗重绘。
+    if let Some(cfg) = cur {
+        build_controls(hwnd, &cfg);
+    }
+    let _ = InvalidateRect(Some(hwnd), None, true);
+
+    MAXIMIZED.store(!MAXIMIZED.load(Ordering::SeqCst), Ordering::SeqCst);
 }
 
 /// 判断一个点是否落在矩形内（顶栏入口的点击与悬停判定共用）。
@@ -883,15 +999,32 @@ unsafe extern "system" fn console_wnd_proc(
             let mut rc = RECT::default();
             let _ = GetClientRect(hwnd, &mut rc);
 
-            // ① 顶栏右侧的两个入口：GitHub / 作者。
-            //    【为什么放在最前面】它们和 ✕ 在同一块顶栏里，必须先精确判断
-            //    入口矩形，再落到关闭热区；否则会先被"右侧 52px"的关闭热区抢走。
+            // ⓪ 顶栏最右侧的三个窗口按钮：最小化 / 最大化(还原) / 关闭。
+            //
+            // 【为什么放在入口判断之前】按钮区在最右边，入口在它左边，
+            // 两块矩形本来不重叠；先判按钮纯粹是让"按下即生效"的语义更直白。
+            // 和系统标题栏一致：这三个动作按下立即响应，不走"松开才触发"。
+            let btns = window_btn_rects(rc.right);
+            if point_in(btns[0], x, y) {
+                // 最小化：收进任务栏（WS_EX_APPWINDOW 保证任务栏有按钮，点回即还原）。
+                let _ = ShowWindow(hwnd, SW_MINIMIZE);
+                return LRESULT(0);
+            }
+            if point_in(btns[1], x, y) {
+                toggle_maximize(hwnd);
+                return LRESULT(0);
+            }
+            if point_in(btns[2], x, y) {
+                // 关闭：走统一的关窗流程（含"改了没保存"提醒）。
+                request_close(hwnd);
+                return LRESULT(0);
+            }
+
+            // ① 顶栏右侧的三个入口：GitHub / 作者 / 检查更新。
             //
             //    【按下只记账，不立即动作】标准按钮语义是"按下 → 松开时鼠标仍落在
-            //    同一入口内 → 才触发"。原来这里鼠标一按下就立刻 about::open，
-            //    按住拖走再松开也会误触发，也没有"按下中"的视觉反馈。
-            //    SetCapture 把鼠标消息抓到本窗口：按住移到窗口外也能收到 WM_LBUTTONUP，
-            //    才能在松开时判断"还在不在这个入口里"（见下面的 WM_LBUTTONUP 分支）。
+            //    同一入口内 → 才触发"。SetCapture 把鼠标消息抓到本窗口：按住移到
+            //    窗口外也能收到 WM_LBUTTONUP，才能在松开时判断"还在不在这个入口里"。
             let links = header_link_rects(rc.right);
             if point_in(links[1], x, y) {
                 HEADER_PRESSED.with(|p| p.set(2)); // 2 = 作者入口
@@ -905,12 +1038,10 @@ unsafe extern "system" fn console_wnd_proc(
                 invalidate_header(hwnd);
                 return LRESULT(0);
             }
-
-            // ② 落在右上角关闭区：走统一的关窗流程（含"改了没保存"提醒）。
-            //    热区：右侧 52px 宽、顶栏 84px 高的一整块（比 ✕ 图形本身大得多，
-            //    手指/鼠标稍微偏一点也能点中）。
-            if x >= rc.right - sc(52) && y < sc(84) {
-                request_close(hwnd);
+            if point_in(links[2], x, y) {
+                HEADER_PRESSED.with(|p| p.set(3)); // 3 = 检查更新入口
+                let _ = SetCapture(hwnd);
+                invalidate_header(hwnd);
                 return LRESULT(0);
             }
 
@@ -946,19 +1077,19 @@ unsafe extern "system" fn console_wnd_proc(
                 let mut rc = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rc);
                 let links = header_link_rects(rc.right);
-                let inside = if n == 1 {
-                    point_in(links[0], x, y)
-                } else {
-                    point_in(links[1], x, y)
+                let inside = match n {
+                    1 => point_in(links[0], x, y),
+                    2 => point_in(links[1], x, y),
+                    _ => point_in(links[2], x, y), // 3 = 检查更新
                 };
                 if inside {
                     // 动作和原来"按下时立即执行"的完全一致，只是搬到了松开这一步：
-                    // n = 1 → 打开网址（与"作者卡片里的 GitHub 行"同一个动作，
-                    // 统一交给 about 模块，地址只在那里定义一次）；n = 2 → 作者卡片。
-                    if n == 1 {
-                        about::open_url(about::GITHUB_URL);
-                    } else {
-                        about::open(hwnd);
+                    // n = 1 → 打开 GitHub 项目页；n = 2 → 作者卡片；
+                    // n = 3 → 后台线程查 GitHub 最新 release（结果经 WM_UPDATE_RESULT 回来）。
+                    match n {
+                        1 => about::open_url(about::GITHUB_URL),
+                        2 => about::open(hwnd),
+                        _ => crate::update::spawn_check(hwnd),
                     }
                 }
                 // 不论最终有没有触发，都要重绘顶栏清掉按下态高亮（否则高亮会卡住）。
@@ -993,10 +1124,20 @@ unsafe extern "system" fn console_wnd_proc(
             let mut rc = RECT::default();
             let _ = GetClientRect(hwnd, &mut rc);
             let links = header_link_rects(rc.right);
+            let btns = window_btn_rects(rc.right);
+            // 悬停编码：1=GitHub 2=作者 3=检查更新 4=最小化 5=最大化 6=关闭。
             let hover = if point_in(links[1], x, y) {
                 2
             } else if point_in(links[0], x, y) {
                 1
+            } else if point_in(links[2], x, y) {
+                3
+            } else if point_in(btns[0], x, y) {
+                4
+            } else if point_in(btns[1], x, y) {
+                5
+            } else if point_in(btns[2], x, y) {
+                6
             } else {
                 0
             };
@@ -1035,6 +1176,12 @@ unsafe extern "system" fn console_wnd_proc(
                 };
                 let _ = InvalidateRect(Some(hwnd), Some(&header), false);
             }
+            LRESULT(0)
+        }
+        // 检查更新的后台线程把结果投回这里（lParam 是堆上 Outcome 的指针）。
+        // 拆箱后按结果分发：Toast / 「发现新版本」卡片，见 update.rs。
+        x if x == crate::update::WM_UPDATE_RESULT => {
+            crate::update::handle_result(hwnd, lparam);
             LRESULT(0)
         }
         WM_COMMAND => {
@@ -2147,6 +2294,7 @@ unsafe fn draw_console_background(hwnd: HWND) {
         // 清零）高亮就熄灭，也符合系统按钮"移出即不按下"的习惯。
         let pressed_github = pressed == 1 && hover == 1;
         let pressed_author = pressed == 2 && hover == 2;
+        let pressed_update = pressed == 3 && hover == 3;
         let link_font = make_font(-sc(14), FW_NORMAL.0 as i32);
         // 记住"换进来之前"的字体，画完要换回去，否则下面 DeleteObject
         // 会删掉一个仍被 DC 选中的字体——GDI 里这属于未定义行为。
@@ -2228,24 +2376,155 @@ unsafe fn draw_console_background(hwnd: HWND) {
             },
         );
 
+        // ③ 检查更新（v1.0.0）：幽灵按钮画法与前两个入口完全一致。
+        //    点击后后台线程查 GitHub，这里不显示进度（CHECKING 门闩防连点，
+        //    结果由 Toast / 「发现新版本」卡片反馈，见 update.rs）。
+        if pressed_update {
+            fill_round(hdc, links[2], Palette::BRAND, sc(14));
+        } else if hover == 3 {
+            fill_round(hdc, links[2], Palette::BRAND_SOFT, sc(14));
+        }
+        draw_text_center(
+            hdc,
+            "检查更新",
+            links[2],
+            if pressed_update {
+                Palette::ON_BRAND
+            } else if hover == 3 {
+                Palette::BRAND
+            } else {
+                Palette::TEXT_SUB
+            },
+        );
+
         SelectObject(hdc, old_link_font);
         let _ = DeleteObject(link_font.into());
     }
 
-    // ---- 5. 右上角关闭按钮 ----
+    // ---- 5. 右上角三个窗口按钮：最小化 / 最大化(还原) / 关闭 ----
     //
-    // 【为什么用两条线画、而不是写一个 ✕ 字符】
-    // 字符要靠字体提供字形，"Microsoft YaHei UI" 里未必有这个符号；
-    // 缺字形时会显示成一个"豆腐块"。两条线是纯几何绘制，
-    // 任何 Windows 版本、任何字体环境下都长得一模一样。
+    // 【为什么全部纯几何绘制、不用字符】"─ □ ✕"这类符号要靠字体提供字形，
+    // "Microsoft YaHei UI" 里未必齐全，缺字形会显示成"豆腐块"。
+    // 线条和方框是纯几何绘制，任何 Windows 版本、任何字体环境下长得一模一样。
     //
-    // 【颜色】白底顶栏上不能用白色 ✕，改成次要灰 TEXT_SUB（#64748B）；
-    // 这是网页里关闭按钮的常见处理：不抢眼，但鼠标移过去一看就知道能点。
-    // 点击判定在 WM_LBUTTONDOWN 里（右边缘 52px、上方 84px 的方块）。
+    // 【悬停反馈对齐系统习惯】最小化/最大化悬停 = 浅灰圆角底；
+    // 关闭悬停 = 红底白叉（Windows 自己的标题栏就是红色高亮）。
+    // 点击判定在 WM_LBUTTONDOWN 里（window_btn_rects 的三个矩形）。
     {
-        let cx = rect.right - sc(26);
-        let cy = sc(42); // ✕ 垂直居中于 84 高顶栏
-        draw_close_glyph(hdc, cx, cy, sc(7), sc(2), Palette::TEXT_SUB);
+        let btns = window_btn_rects(rect.right);
+        let hover = HEADER_HOVER.with(|h| h.get());
+        let maximized = MAXIMIZED.load(Ordering::SeqCst);
+
+        // 悬停底色（先画底再画图形，图形颜色才能压在底色上）。
+        for (i, code) in [(0usize, 4u8), (1, 5), (2, 6)] {
+            if hover == code {
+                let r = btns[i];
+                // 底色不贴满整条顶栏：上下各留 14px、左右各留 3px 的圆角块，
+                // 视觉上更轻，也不会盖住顶栏底边的分隔线。
+                let pad = RECT {
+                    left: r.left + sc(3),
+                    top: sc(14),
+                    right: r.right - sc(3),
+                    bottom: sc(70),
+                };
+                fill_round(
+                    hdc,
+                    pad,
+                    if code == 6 { Palette::DANGER } else { Palette::HOVER },
+                    sc(8),
+                );
+            }
+        }
+
+        // ① 最小化：一条 14px 的水平短线（垂直居中略偏下，和系统一致）。
+        {
+            let cx = (btns[0].left + btns[0].right) / 2;
+            let cy = sc(44);
+            fill_solid(
+                hdc,
+                RECT {
+                    left: cx - sc(7),
+                    top: cy - sc(1),
+                    right: cx + sc(7),
+                    bottom: cy + sc(1),
+                },
+                if hover == 4 { Palette::TEXT } else { Palette::TEXT_SUB },
+            );
+        }
+
+        // ② 最大化 / 还原：未最大化画一个 □；已最大化画"两个叠放的方框"
+        //    （系统还原图标就是错位双框，一眼区分两种状态）。
+        {
+            let cx = (btns[1].left + btns[1].right) / 2;
+            let cy = sc(42);
+            let color = if hover == 5 { Palette::TEXT } else { Palette::TEXT_SUB };
+            if !maximized {
+                draw_round_border(
+                    hdc,
+                    RECT {
+                        left: cx - sc(6),
+                        top: cy - sc(6),
+                        right: cx + sc(6),
+                        bottom: cy + sc(6),
+                    },
+                    color,
+                    sc(2),
+                    sc(2),
+                );
+            } else {
+                // 后层方框（右上偏移 4px）：只描边。
+                draw_round_border(
+                    hdc,
+                    RECT {
+                        left: cx - sc(3),
+                        top: cy - sc(9),
+                        right: cx + sc(9),
+                        bottom: cy + sc(3),
+                    },
+                    color,
+                    sc(2),
+                    sc(2),
+                );
+                // 前层方框：先用顶栏白把后层边框压掉一截，再描自己的边——
+                // 叠放关系立刻清楚，也不用做真正的"线条断开"计算。
+                fill_solid(
+                    hdc,
+                    RECT {
+                        left: cx - sc(9),
+                        top: cy - sc(3),
+                        right: cx + sc(4),
+                        bottom: cy + sc(9),
+                    },
+                    if hover == 5 { Palette::HOVER } else { Palette::CARD },
+                );
+                draw_round_border(
+                    hdc,
+                    RECT {
+                        left: cx - sc(9),
+                        top: cy - sc(3),
+                        right: cx + sc(3),
+                        bottom: cy + sc(9),
+                    },
+                    color,
+                    sc(2),
+                    sc(2),
+                );
+            }
+        }
+
+        // ③ 关闭 ✕：悬停红底时换成白色叉（红底上灰叉看不清）。
+        {
+            let cx = (btns[2].left + btns[2].right) / 2;
+            let cy = sc(42);
+            draw_close_glyph(
+                hdc,
+                cx,
+                cy,
+                sc(7),
+                sc(2),
+                if hover == 6 { Palette::ON_BRAND } else { Palette::TEXT_SUB },
+            );
+        }
     }
 
     let _ = DeleteObject(title_font.into());
@@ -2856,6 +3135,8 @@ unsafe fn collect_config(handles: ControlHandles) -> Config {
         guard_enabled,
         // 运行中遮罩：主控台不暴露，沿用原值（默认关闭）
         overlay_enabled: base.overlay_enabled,
+        // 授权激活状态：主控台不提供开关，原样保留（激活只在启动时做一次）。
+        license_activated: base.license_activated,
     }
 }
 
