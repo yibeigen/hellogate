@@ -72,6 +72,20 @@ cargo build --release   # 产物：target/release/hellogate.exe
 - Windows 10 1809+ / Windows 11
 - 默认认证为「自设密码」，无需配置 Windows Hello 也能用
 
+## 关于作者
+
+**艺杯羹** · 探索技术边界，构建数字世界
+
+| 平台 | 地址 |
+| --- | --- |
+| GitHub | <https://github.com/yibeigen> |
+| Gitee | <https://gitee.com/yibeigen> |
+| GitCode | <https://gitcode.com/yibeigen> |
+| 微信 | peace-83 |
+| QQ | 3057454077 |
+
+公众号 **艺杯羹**（微信搜一搜）· 技术文章与软件更新动态
+
 ## 许可
 
 [MIT License](LICENSE)
