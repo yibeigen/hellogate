@@ -84,6 +84,10 @@ pub(crate) const GITEE_URL: &str = "https://gitee.com/yibeigen/hellogate";
 pub(crate) const GITCODE_URL: &str = "https://gitcode.com/yibeigen/hellogate";
 /// GitHub Release 最新发布页（检查更新拿到新版本号后引导用户到这里下载）。
 pub(crate) const GITHUB_RELEASES_URL: &str = "https://github.com/yibeigen/hellogate/releases/latest";
+/// Gitee 发行版列表页（国内网络下载更快，v1.0.0 起已上传 exe 附件）。
+pub(crate) const GITEE_RELEASES_URL: &str = "https://gitee.com/yibeigen/hellogate/releases";
+/// GitCode 发行版列表页（国内网络下载更快，v1.0.0 起已上传 exe 附件）。
+pub(crate) const GITCODE_RELEASES_URL: &str = "https://gitcode.com/yibeigen/hellogate/releases";
 /// 微信号。
 const WECHAT_ID: &str = "peace-83";
 /// QQ 号。

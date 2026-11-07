@@ -42,10 +42,17 @@
 2. 发送消息 **文章**；
 3. 收到授权码后填入激活窗口，一次激活、永久生效。
 
-## 快速开始
+## 下载安装
 
-1. 到 [GitHub Releases](https://github.com/yibeigen/hellogate/releases/latest) 下载 `hellogate.exe`
-   （下载慢可改用 [Gitee](https://gitee.com/yibeigen/hellogate) / [GitCode](https://gitcode.com/yibeigen/hellogate) 仓库发行版）；
+任选一个平台下载 `hellogate.exe`（均已上传附件，国内推荐 Gitee / GitCode）：
+
+| 平台 | 下载地址 |
+| --- | --- |
+| GitHub | [Releases](https://github.com/yibeigen/hellogate/releases/latest) |
+| Gitee | [发行版](https://gitee.com/yibeigen/hellogate/releases) |
+| GitCode | [发行版](https://gitcode.com/yibeigen/hellogate/releases) |
+
+1. 下载 `hellogate.exe`；
 2. 双击运行，在 UAC 中允许管理员权限（用于登记启动拦截，仅首次）；
 3. 输入授权码激活；
 4. 主控台点「+ 添加应用」选择要加锁的程序，勾选后保存；

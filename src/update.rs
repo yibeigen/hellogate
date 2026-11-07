@@ -308,13 +308,13 @@ const LINKS: [(&str, &str, &str); 3] = [
     ),
     (
         "Gitee 镜像",
-        "国内网络下载更快",
-        crate::about::GITEE_URL,
+        "国内网络下载更快 · 已附 exe",
+        crate::about::GITEE_RELEASES_URL,
     ),
     (
         "GitCode 镜像",
-        "国内网络下载更快",
-        crate::about::GITCODE_URL,
+        "国内网络下载更快 · 已附 exe",
+        crate::about::GITCODE_RELEASES_URL,
     ),
 ];
 
